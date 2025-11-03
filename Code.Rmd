@@ -1,0 +1,393 @@
+---
+title: "Prediction Model (EDA, Data Visualization, ARIMA)"
+author: "Weitang Yin"
+date: "2024-07-31"
+output: html_document
+---
+# EDA
+```{r}
+knitr::opts_chunk$set(echo = TRUE, cache = T, fig.width=8, fig.height=4)
+options(scipen = 0, digits = 3)  # controls base R output
+if(!require('pacman')) {
+  install.packages('pacman')
+}
+pacman::p_load(ggplot2, dplyr, tidyverse, gridExtra, ggrepel, plotly, skimr, tidytext) 
+```
+
+```{r}
+data_matches <- read.csv("data/modified_international_matches.csv")
+```
+
+```{r}
+country1 <- data_matches %>% count(home_team) %>% rename(team = home_team)
+country2 <- data_matches %>% count(away_team) %>% rename(team1 = away_team, m = n)
+country_total <- as.data.frame(cbind(country1, country2)) %>% select(-team1)
+country_matches <- country_total %>% mutate(total = n + m)
+
+```
+
+# Data Visualization
+```{r setup}
+#Graph for average home and away scores by continent
+library(tidyverse)
+
+
+data <- read.csv('data/international_matches.csv')
+
+avg_scores_continent <- data %>%
+  group_by(home_team_continent) %>%
+  summarise(avg_home_score = mean(home_team_score, na.rm = TRUE),
+            avg_away_score = mean(away_team_score, na.rm = TRUE))
+
+avg_scores_long <- avg_scores_continent %>%
+  pivot_longer(cols = c(avg_home_score, avg_away_score),
+               names_to = "type",
+               values_to = "average_score")
+
+head(avg_scores_long)
+
+ggplot(avg_scores_long, aes(x = home_team_continent, y = average_score, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average Home and Away Scores by Continent", x = "Continent", y = "Average Score") +
+  scale_fill_manual(name = "Type", values = c("avg_home_score" = "blue", "avg_away_score" = "red"),
+                    labels = c("avg_home_score" = "Home", "avg_away_score" = "Away")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+#Heat map of the world for games per country
+data <- read.csv('data/international_matches.csv')
+data$home_team <- ifelse(data$home_team == "USA", "United States", data$home_team)
+data$home_team <- ifelse(data$home_team == "China PR", "China", data$home_team)
+data$home_team <- ifelse(data$home_team == "Korea Republic", "S. Korea", data$home_team)
+
+data$away_team <- ifelse(data$away_team == "USA", "United States", data$away_team)
+data$away_team <- ifelse(data$away_team == "China PR", "China", data$away_team)
+data$away_team <- ifelse(data$away_team == "Korea Republic", "S. Korea", data$away_team)
+library(dplyr)
+
+country_game_counts <- data %>%
+  select(home_team, away_team) %>%
+  pivot_longer(cols = c(home_team, away_team), names_to = "home_or_away", values_to = "country") %>%
+  group_by(country) %>%
+  summarise(number_of_games = n(), .groups = 'drop')
+
+library(rworldmap)
+
+
+world_map <- getMap()
+
+world_map@data <- left_join(world_map@data, country_game_counts, by = c("NAME" = "country"))
+
+library(rworldmap)
+mapCountryData(world_map, nameColumnToPlot = "number_of_games", catMethod = "fixedWidth", colourPalette = "heat", addLegend = TRUE)
+
+#linear regression model for the most improtant factor between offense, midfield, defense, and goalkeeper
+library(dplyr)
+data <- read.csv('data/international_matches.csv')
+names(data)
+
+Ofit <- lm(home_team_score ~ home_team_goalkeeper_score + home_team_mean_defense_score + home_team_mean_offense_score + home_team_mean_midfield_score, data = data)
+summary(Ofit)
+
+Afit <- lm(away_team_score ~ away_team_goalkeeper_score + away_team_mean_defense_score + away_team_mean_offense_score + away_team_mean_midfield_score, data = data)
+summary(Afit)
+
+```
+# ARIMA
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.align = "center",
+	fig.height = 4,
+	fig.width = 7,
+	warning = FALSE,
+	cache = TRUE
+)
+knitr::opts_chunk$set(fig.height=4
+                      , fig.width=7, fig.align = 'center', warning = F)
+
+if(!require('pacman')) {
+  install.packages('pacman')
+}
+pacman::p_load(reticulate, keras, ggplot2, glmnet, RColorBrewer, wordcloud, neuralnet, latex2exp,keras3, tidyverse)
+
+library(reticulate)
+virtualenv_create("r")
+virtualenv_install("r", packages=c("keras", "tensorflow", "transformers", "tf-keras"))
+use_virtualenv("r", required=TRUE)
+
+install.packages("zoo")
+library(zoo)
+
+# Install and load the necessary package
+install.packages("forecast")
+library(forecast)
+```
+
+```{r}
+data_matches <-read.csv('data/modified_international_matches.csv',header=T,stringsAsFactors=FALSE)
+```
+
+```{r}
+###
+data_offense_home <- data_matches %>% group_by(home_team, date) %>% summarize(home_team_mean_offense_score = mean(home_team_mean_offense_score))
+names(data_offense_home) <- c("team", "date", "home_offense")
+data_offense_away <- data_matches %>% group_by(away_team, date) %>% summarize(away_team_mean_offense_score = mean(away_team_mean_offense_score))
+names(data_offense_away) <- c("team", "date", "away_offense")
+
+#merge
+data_offense <- data_offense_away %>% full_join(data_offense_home, by =c("team", "date"))
+
+data_offense <- data_offense %>% mutate(team_mean_offense_score = (away_offense + home_offense)/2)
+
+data_offense$team_mean_offense_score <- na.locf(data_offense$team_mean_offense_score)
+
+
+###
+data_defense_home <- data_matches %>% group_by(home_team, date) %>% summarize(home_team_mean_defense_score = mean(home_team_mean_defense_score))
+names(data_defense_home) <- c("team", "date", "home_defense")
+data_defense_away <- data_matches %>% group_by(away_team, date) %>% summarize(away_team_mean_defense_score = mean(away_team_mean_defense_score))
+names(data_defense_away) <- c("team", "date", "away_defense")
+
+#merge
+data_defense <- data_defense_away %>% full_join(data_defense_home, by =c("team", "date"))
+
+data_defense <- data_defense %>% mutate(team_mean_defense_score = (away_defense + home_defense)/2)
+
+data_defense$team_mean_defense_score <- na.locf(data_defense$team_mean_defense_score)
+
+###
+data_goalkeeper_home <- data_matches %>% group_by(home_team, date) %>% summarize(home_team_goalkeeper_score = mean(home_team_goalkeeper_score))
+names(data_goalkeeper_home) <- c("team", "date", "home_goalkeeper")
+data_goalkeeper_away <- data_matches %>% group_by(away_team, date) %>% summarize(away_team_gaolkeeper_score = mean(away_team_goalkeeper_score))
+names(data_goalkeeper_away) <- c("team", "date", "away_goalkeeper")
+
+#merge
+data_goalkeeper <- data_goalkeeper_away %>% full_join(data_goalkeeper_home, by =c("team", "date"))
+
+data_goalkeeper <- data_goalkeeper %>% mutate(team_goalkeeper_score = (away_goalkeeper + home_goalkeeper)/2)
+
+data_goalkeeper$team_goalkeeper_score <- na.locf(data_goalkeeper$team_goalkeeper_score)
+
+###
+data_midfield_home <- data_matches %>% group_by(home_team, date) %>% summarize(home_team_mean_midfield_score = mean(home_team_mean_midfield_score))
+names(data_midfield_home) <- c("team", "date", "home_midfield")
+data_midfield_away <- data_matches %>% group_by(away_team, date) %>% summarize(away_team_mean_midfield_score = mean(away_team_mean_midfield_score))
+names(data_midfield_away) <- c("team", "date", "away_midfield")
+
+#merge
+data_midfield <- data_midfield_away %>% full_join(data_midfield_home, by =c("team", "date"))
+
+data_midfield <- data_midfield %>% mutate(team_mean_midfield_score = (away_midfield + home_midfield)/2)
+
+data_midfield$team_mean_midfield_score <- na.locf(data_midfield$team_mean_midfield_score)
+```
+
+
+
+```{r}
+# 
+# data_offense <- data_matches %>% dplyr::select(date, home_team, home_team_mean_offense_score)
+# data_offense<-data_offense%>%dplyr::arrange(home_team,by_group=TRUE)
+# 
+# data_offense
+# 
+# data_defense <- data_matches %>% dplyr::select(date, home_team, home_team_mean_defense_score)
+# data_defense<-data_defense%>%dplyr::arrange(home_team,by_group=TRUE)
+# 
+# data_defense
+# 
+# data_goalkeeper <- data_matches %>% dplyr::select(date, home_team, home_team_goalkeeper_score)
+# data_goalkeeper<-data_goalkeeper%>%dplyr::arrange(home_team,by_group=TRUE)
+# 
+# data_goalkeeper
+# 
+# data_midfield <- data_matches %>% dplyr::select(date, home_team, home_team_mean_midfield_score)
+# data_midfield<-data_midfield %>% dplyr::arrange(home_team,by_group=TRUE)
+# 
+# data_midfield
+```
+
+```{r}
+recent_data_offense<-data_offense %>% group_by(date, team) %>% summarize(offensive_score = mean(team_mean_offense_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 7)
+
+recent_data_test_offense <-data_offense %>%  group_by(date, team) %>% summarize(offensive_score = mean(team_mean_offense_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 1)
+
+recent_data_train_offense <- anti_join(recent_data_offense, recent_data_test_offense, by = c("date", "team"))
+
+recent_data_test_offense<-recent_data_test_offense[-3,]
+# recent_data_test_offense<-recent_data_test_offense[-36,]
+
+recent_data_train_offense
+
+###
+recent_data_defense<-data_defense %>% group_by(date, team) %>% summarize(defensive_score = mean(team_mean_defense_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 7)
+
+recent_data_test_defense <-data_defense %>%  group_by(date, team) %>% summarize(defensive_score = mean(team_mean_defense_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 1)
+
+recent_data_train_defense <- anti_join(recent_data_defense, recent_data_test_defense, by = c("date", "team"))
+
+recent_data_test_defense<-recent_data_test_defense[-3,]
+# recent_data_test_defense<-recent_data_test_defense[-36,]
+
+recent_data_train_defense
+
+###
+recent_data_goalkeeper<-data_goalkeeper %>% group_by(date, team) %>% summarize(goalkeeper_score = mean(team_goalkeeper_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 7)
+
+recent_data_test_goalkeeper <-data_goalkeeper %>%  group_by(date, team) %>% summarize(goalkeeper_score = mean(team_goalkeeper_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 1)
+
+recent_data_train_goalkeeper <- anti_join(recent_data_goalkeeper, recent_data_test_goalkeeper, by = c("date", "team"))
+
+recent_data_test_goalkeeper<-recent_data_test_goalkeeper[-3,]
+# recent_data_test_goalkeeper<-recent_data_test_goalkeeper[-36,]
+
+recent_data_train_goalkeeper
+
+###
+recent_data_midfield<-data_midfield %>% group_by(date, team) %>% summarize(midfield_score = mean(team_mean_midfield_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 7)
+
+recent_data_test_midfield <-data_midfield %>%  group_by(date, team) %>% summarize(midfield_score = mean(team_mean_midfield_score)) %>% ungroup() %>% group_by(team) %>% dplyr::slice_tail(n = 1)
+
+recent_data_train_midfield <- anti_join(recent_data_midfield, recent_data_test_midfield, by = c("date", "team"))
+
+recent_data_test_midfield<-recent_data_test_midfield[-3,]
+# recent_data_test_midfield<-recent_data_test_midfield[-36,]
+
+recent_data_train_midfield
+```
+
+```{r}
+###
+data_split_offense <- recent_data_train_offense %>% 
+              group_by(team) %>% 
+              group_split()
+for ( i in seq_along(data_split_offense)) {
+    start_year<-min(data_split_offense[[i]]$date)
+}
+
+arima_models_offense <- data_split_offense %>%
+                map(~ {
+                    ts_data_offense <- ts(.x$offensive_score, start = start_year)
+                    model <- auto.arima(ts_data_offense)
+                    return(model)
+                })
+###
+data_split_defense <- recent_data_train_defense %>% 
+              group_by(team) %>% 
+              group_split()
+for ( i in seq_along(data_split_defense)) {
+    start_year<-min(data_split_defense[[i]]$date)
+}
+
+arima_models_defense <- data_split_defense %>%
+                map(~ {
+                    ts_data_defense <- ts(.x$defensive_score, start = start_year)
+                    model <- auto.arima(ts_data_defense)
+                    return(model)
+                })
+
+###
+data_split_goalkeeper <- recent_data_train_goalkeeper %>% 
+              group_by(team) %>% 
+              group_split()
+for ( i in seq_along(data_split_goalkeeper)) {
+    start_year<-min(data_split_goalkeeper[[i]]$date)
+}
+
+arima_models_goalkeeper <- data_split_goalkeeper%>%
+                map(~ {
+                    ts_data_goalkeeper <- ts(.x$goalkeeper_score, start = start_year)
+                    model <- auto.arima(ts_data_goalkeeper)
+                    return(model)
+                })
+###
+data_split_midfield <- recent_data_train_midfield %>% 
+              group_by(team) %>% 
+              group_split()
+for ( i in seq_along(data_split_midfield)) {
+    start_year<-min(data_split_midfield[[i]]$date)
+}
+
+arima_models_midfield <- data_split_midfield %>%
+                map(~ {
+                    ts_data_midfield <- ts(.x$midfield_score, start = start_year)
+                    model <- auto.arima(ts_data_midfield)
+                    return(model)
+                })
+#####
+
+###
+forecasts_offense <- map(arima_models_offense, ~ forecast(.x, h = 1))  # 12-step ahead forecast
+predicted_arima_offense <- seq(0, n= seq_along(data_split_offense) )
+# Example: Plot forecast for the first category
+for (i in seq_along(data_split_offense)) {
+    plot(forecasts_offense[[i]])
+    predicted_arima_offense[i] = forecasts_offense[[i]]$fitted
+}
+
+###
+forecasts_defense <- map(arima_models_defense, ~ forecast(.x, h = 1))  # 12-step ahead forecast
+predicted_arima_defense <- seq(0, n= seq_along(data_split_defense) )
+# Example: Plot forecast for the first category
+for (i in seq_along(data_split_defense)) {
+    plot(forecasts_defense[[i]])
+    predicted_arima_defense[i] = forecasts_defense[[i]]$fitted
+}
+
+###
+forecasts_goalkeeper <- map(arima_models_goalkeeper, ~ forecast(.x, h = 1))  # 12-step ahead forecast
+predicted_arima_goalkeeper <- seq(0, n= seq_along(data_split_goalkeeper) )
+# Example: Plot forecast for the first category
+for (i in seq_along(data_split_goalkeeper)) {
+    plot(forecasts_goalkeeper[[i]])
+    predicted_arima_goalkeeper[i] = forecasts_goalkeeper[[i]]$fitted
+}
+
+###
+forecasts_midfield <- map(arima_models_midfield, ~ forecast(.x, h = 1))  # 12-step ahead forecast
+predicted_arima_midfield<- seq(0, n= seq_along(data_split_midfield) )
+# Example: Plot forecast for the first category
+for (i in seq_along(data_split_midfield)) {
+    plot(forecasts_midfield[[i]])
+    predicted_arima_midfield[i] = forecasts_midfield[[i]]$fitted
+}
+```
+
+```{r}
+##
+error.testing.fit.offense <- mean((predicted_arima_offense-recent_data_test_offense$offensive_score)^2)
+error.testing.fit.offense
+##
+error.testing.fit.defense <- mean((predicted_arima_defense-recent_data_test_defense$defensive_score)^2)
+error.testing.fit.defense
+##
+error.testing.fit.goalkeeper <- mean((predicted_arima_goalkeeper-recent_data_test_goalkeeper$goalkeeper_score)^2)
+error.testing.fit.goalkeeper
+##
+error.testing.fit.midfield <- mean((predicted_arima_midfield-recent_data_test_midfield$midfield_score)^2)
+error.testing.fit.midfield
+```
+
+```{r}
+##
+predict.offense<-data.frame(recent_data_test_offense$team, predicted_arima_offense)
+predict.offense
+##
+predict.defense<-data.frame(recent_data_test_defense$team, predicted_arima_defense)
+predict.defense
+##
+predict.goalkeeper<-data.frame(recent_data_test_goalkeeper$team, predicted_arima_goalkeeper)
+predict.goalkeeper
+##
+predict.midfield<-data.frame(recent_data_test_midfield$team, predicted_arima_midfield)
+predict.midfield
+##
+predict.final<-data.frame(recent_data_test_offense$team, predicted_arima_offense, predicted_arima_defense, predicted_arima_goalkeeper, predicted_arima_midfield)
+predict.final
+```
+```{r}
+write.csv(predict.final, "output/final.csv", row.names = TRUE)
+```
